@@ -1,0 +1,341 @@
+pipeline {
+    agent any
+    
+    environment {
+        GIT_REPO_NAME = "Microservices-E-Commerce-eks-project"
+        GIT_EMAIL = "aymen.bendjaballah@univ-constantine2.dz"
+        GIT_USER_NAME = "aymenmahrez-19"
+        SERVICE_NAME = "shippingservice"           // ✅ الاسم الحقيقي
+        IMAGE_NAME = "shippingservice"             // ✅ اسم الصورة المحلي
+        ECR_REPO_NAME = "aymen-shipping-service"   // ✅ اسم مستودع ECR
+        AWS_ACCOUNT_ID = "851725560519"
+        AWS_REGION = "us-east-1"
+        REPO_URL = "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO_NAME}"
+        YAML_FILE = "shippingservice.yaml"         // ✅ اسم ملف YAML الحقيقي
+        DOCKERFILE_PATH = "src/shippingservice"    // ✅ المسار الحقيقي
+    }
+    
+    options {
+        timeout(time: 30, unit: 'MINUTES')
+        disableConcurrentBuilds()
+        buildDiscarder(logRotator(numToKeepStr: '10'))
+        retry(1)
+    }
+    
+    stages {
+        stage('🚀 Initialize') {
+            steps {
+                script {
+                    echo """
+                    ====================================
+                    SHIPPING SERVICE PIPELINE
+                    ====================================
+                    Service: ${SERVICE_NAME}
+                    Local Image: ${IMAGE_NAME}
+                    ECR Repository: ${ECR_REPO_NAME}
+                    ECR URL: ${REPO_URL}
+                    Dockerfile: ${DOCKERFILE_PATH}/Dockerfile
+                    YAML File: ${YAML_FILE}
+                    Build: ${BUILD_NUMBER}
+                    ====================================
+                    """
+                }
+            }
+        }
+        
+        stage('🧹 Clean Workspace') {
+            steps {
+                cleanWs()
+            }
+        }
+        
+        stage('📥 Checkout Code') {
+            steps {
+                checkout([
+                    $class: 'GitSCM',
+                    branches: [[name: '*/master']],
+                    extensions: [
+                        [$class: 'CleanBeforeCheckout'],
+                        [$class: 'CloneOption', depth: 1, shallow: true]
+                    ],
+                    userRemoteConfigs: [[
+                        url: 'https://github.com/aymenmahrez-19/Microservices-E-Commerce-eks-project.git'
+                    ]]
+                ])
+                
+                // ✅ التحقق من الهيكل الحقيقي
+                sh """
+                    echo "=== Verifying Actual Structure ==="
+                    echo "1. Checking Dockerfile..."
+                    if [ -f "${DOCKERFILE_PATH}/Dockerfile" ]; then
+                        echo "✅ Dockerfile exists: ${DOCKERFILE_PATH}/Dockerfile"
+                        echo "=== Dockerfile Content (first 10 lines) ==="
+                        head -10 "${DOCKERFILE_PATH}/Dockerfile"
+                    else
+                        echo "❌ Dockerfile not found at ${DOCKERFILE_PATH}/Dockerfile"
+                        exit 1
+                    fi
+                    
+                    echo ""
+                    echo "2. Checking Kubernetes YAML..."
+                    if [ -f "kubernetes-files/${YAML_FILE}" ]; then
+                        echo "✅ YAML file exists: kubernetes-files/${YAML_FILE}"
+                    else
+                        echo "⚠️ YAML file not found, will create one"
+                    fi
+                    
+                    echo ""
+                    echo "3. Checking ECR repository..."
+                    aws ecr describe-repositories --repository-names ${ECR_REPO_NAME} --region ${AWS_REGION} 2>/dev/null && echo "✅ ECR repository exists" || echo "❌ ECR repository not found"
+                """
+            }
+        }
+        
+        stage('🐳 Docker Build') {
+            steps {
+                dir(env.DOCKERFILE_PATH) {
+                    sh """
+                        echo "=== Building Docker Image ==="
+                        echo "Working directory: \$(pwd)"
+                        echo "Files in directory:"
+                        ls -la
+                        
+                        # تنظيف الصور القديمة
+                        docker system prune -f
+                        
+                        # بناء الصورة
+                        docker build \\
+                            -t ${IMAGE_NAME}:\${BUILD_NUMBER} \\
+                            -t ${IMAGE_NAME}:latest \\
+                            .
+                        
+                        echo "✅ Image built successfully"
+                        echo "=== Built Images ==="
+                        docker images | grep ${IMAGE_NAME}
+                    """
+                }
+            }
+        }
+        
+        stage('🔐 Login to ECR') {
+            steps {
+                sh """
+                    echo "=== Logging into ECR ==="
+                    aws ecr get-login-password --region ${AWS_REGION} | \\
+                    docker login --username AWS --password-stdin ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com
+                    
+                    if [ \$? -eq 0 ]; then
+                        echo "✅ Successfully logged into ECR"
+                    else
+                        echo "❌ Failed to login to ECR"
+                        exit 1
+                    fi
+                """
+            }
+        }
+        
+        stage('📤 Push to ECR') {
+            steps {
+                script {
+                    sh """
+                        echo "=== Pushing to ECR ==="
+                        echo "ECR Repository: ${ECR_REPO_NAME}"
+                        echo "Full URL: ${REPO_URL}"
+                        
+                        # وضع علامة على الصورة
+                        docker tag ${IMAGE_NAME}:\${BUILD_NUMBER} ${REPO_URL}:\${BUILD_NUMBER}
+                        docker tag ${IMAGE_NAME}:latest ${REPO_URL}:latest
+                        
+                        # رفع الصورة
+                        echo "Pushing images to ECR..."
+                        docker push ${REPO_URL}:\${BUILD_NUMBER}
+                        docker push ${REPO_URL}:latest
+                        
+                        echo "✅ Successfully pushed:"
+                        echo "   - ${REPO_URL}:\${BUILD_NUMBER}"
+                        echo "   - ${REPO_URL}:latest"
+                        
+                        # عرض الصور في ECR
+                        echo ""
+                        echo "=== Images in ECR Repository ==="
+                        aws ecr list-images \\
+                            --repository-name ${ECR_REPO_NAME} \\
+                            --region ${AWS_REGION} \\
+                            --query "imageIds[].imageTag" \\
+                            --output text 2>/dev/null | tr '\\t' '\\n' | sort || echo "No images found"
+                    """
+                }
+            }
+        }
+        
+        stage('📝 Update Kubernetes YAML') {
+            steps {
+                script {
+                    dir('kubernetes-files') {
+                        sh """
+                            echo "=== Updating Kubernetes YAML ==="
+                            echo "YAML File: ${YAML_FILE}"
+                            
+                            if [ -f "${YAML_FILE}" ]; then
+                                echo "✅ Found existing YAML file"
+                                echo "=== Current content (first 5 lines) ==="
+                                head -5 "${YAML_FILE}"
+                                
+                                # حفظ نسخة احتياطية
+                                cp "${YAML_FILE}" "${YAML_FILE}.backup"
+                                
+                                # تحديث علامة الصورة
+                                sed -i "s|image:.*|image: ${REPO_URL}:${BUILD_NUMBER}|g" "${YAML_FILE}"
+                                
+                                echo "✅ Updated image tag to: ${REPO_URL}:${BUILD_NUMBER}"
+                                echo "=== Updated content ==="
+                                grep "image:" "${YAML_FILE}"
+                            else
+                                echo "⚠️ YAML file not found, creating new one"
+                                
+                                cat > "${YAML_FILE}" << 'EOF'
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: shippingservice
+  namespace: default
+  labels:
+    app: shippingservice
+    environment: learner-lab
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: shippingservice
+  template:
+    metadata:
+      labels:
+        app: shippingservice
+    spec:
+      containers:
+      - name: shippingservice
+        image: ${REPO_URL}:${BUILD_NUMBER}
+        ports:
+        - containerPort: 50051
+        env:
+        - name: PORT
+          value: "50051"
+        resources:
+          limits:
+            cpu: "200m"
+            memory: "256Mi"
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: shippingservice
+  namespace: default
+spec:
+  selector:
+    app: shippingservice
+  ports:
+  - port: 50051
+    targetPort: 50051
+  type: ClusterIP
+EOF
+                                
+                                echo "✅ Created new YAML file: ${YAML_FILE}"
+                            fi
+                        """
+                    }
+                }
+            }
+        }
+        
+        stage('🔀 Commit to Git') {
+            steps {
+                script {
+                    // ✅ استخدام طريقة مبسطة للالتزام
+                    sh """
+                        echo "=== Committing changes to Git ==="
+                        
+                        # تهيئة git
+                        git config user.email "${GIT_EMAIL}"
+                        git config user.name "${GIT_USER_NAME}"
+                        
+                        # إضافة ملف YAML
+                        git add kubernetes-files/${YAML_FILE}
+                        
+                        # الالتزام
+                        git commit -m "Update ${SERVICE_NAME} to build-${BUILD_NUMBER}" || echo "No changes to commit"
+                        
+                        echo "✅ Changes committed locally"
+                        echo "Note: To push to GitHub, run manually:"
+                        echo "git push origin master"
+                    """
+                }
+            }
+        }
+        
+        stage('✅ Pipeline Summary') {
+            steps {
+                script {
+                    echo """
+                    ====================================
+                    ✅ SHIPPING SERVICE PIPELINE COMPLETED
+                    ====================================
+                    📊 SUMMARY:
+                    
+                    1. ✅ Docker Image Built:
+                       - Local: ${IMAGE_NAME}:\${BUILD_NUMBER}
+                       - ECR: ${REPO_URL}:\${BUILD_NUMBER}
+                    
+                    2. ✅ ECR Push Successful:
+                       - Repository: ${ECR_REPO_NAME}
+                       - Images pushed: \${BUILD_NUMBER}, latest
+                    
+                    3. ✅ Kubernetes YAML Updated:
+                       - File: kubernetes-files/${YAML_FILE}
+                       - Image tag: ${REPO_URL}:\${BUILD_NUMBER}
+                    
+                    4. ✅ Git Changes Committed
+                    
+                    🚀 NEXT STEPS:
+                    
+                    To deploy to Kubernetes:
+                    kubectl apply -f kubernetes-files/${YAML_FILE}
+                    
+                    To verify deployment:
+                    kubectl get pods -l app=shippingservice
+                    kubectl logs -f deployment/shippingservice
+                    
+                    ====================================
+                    """
+                }
+            }
+        }
+    }
+    
+    post {
+        always {
+            // تنظيف
+            sh '''
+                echo "=== Cleaning up ==="
+                docker system prune -f 2>/dev/null || true
+            '''
+            
+            // حفظ المخرجات
+            archiveArtifacts artifacts: 'kubernetes-files/*.yaml, kubernetes-files/*.backup', fingerprint: true, allowEmptyArchive: true
+        }
+        
+        success {
+            echo "🎉 Shipping service pipeline completed successfully!"
+        }
+        
+        failure {
+            echo "❌ Shipping service pipeline failed"
+        }
+        
+        cleanup {
+            cleanWs()
+        }
+    }
+}

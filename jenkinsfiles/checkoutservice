@@ -1,0 +1,83 @@
+pipeline {
+    agent any
+
+    environment {
+        // GitHub
+        GIT_REPO_NAME = "Microservices-E-Commerce-eks-project"
+        GIT_USER_NAME = "aymenmahrez-19"
+        GIT_EMAIL = "aymen.bendjaballah@univ-constantine2.dz"
+        GIT_CREDENTIALS_ID = "my-git-pattoken"
+
+        // AWS ECR
+        AWS_REGION = 'us-east-1'
+        AWS_ACCOUNT_ID = '851725560519'
+        IMAGE_TAG = 'latest'
+
+        // Service specific
+        SERVICE_NAME = 'aymen-checkout-service'
+        YAML_FILE = 'checkoutservice.yaml'
+        ECR_REPO = "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${SERVICE_NAME}"
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                git branch: 'master', url: "https://github.com/${GIT_USER_NAME}/${GIT_REPO_NAME}.git"
+            }
+        }
+
+        stage('Login to ECR') {
+            steps {
+                sh """
+                    aws ecr get-login-password --region ${AWS_REGION} \
+                    | docker login --username AWS --password-stdin ${ECR_REPO}
+                """
+            }
+        }
+
+        stage('Build Docker Image') {
+            steps {
+                dir('src/checkoutservice') {
+                    sh "docker build -t ${SERVICE_NAME}:${IMAGE_TAG} ."
+                }
+            }
+        }
+
+        stage('Push to ECR') {
+            steps {
+                sh """
+                    docker tag ${SERVICE_NAME}:${IMAGE_TAG} ${ECR_REPO}:${IMAGE_TAG}
+                    docker push ${ECR_REPO}:${IMAGE_TAG}
+                """
+            }
+        }
+
+        stage('Update Kubernetes YAML & Push') {
+            steps {
+                dir('kubernetes-files') {
+                    withCredentials([string(credentialsId: "${GIT_CREDENTIALS_ID}", variable: 'GIT_TOKEN')]) {
+                        sh """
+                            git config user.email "${GIT_EMAIL}"
+                            git config user.name "${GIT_USER_NAME}"
+                            sed -i "s#image:.*#image: ${ECR_REPO}:${IMAGE_TAG}#g" ${YAML_FILE}
+                            git add ${YAML_FILE}
+                            git commit -m "Update ${SERVICE_NAME} image to ${IMAGE_TAG}" || echo "No changes to commit"
+                            git push https://${GIT_USER_NAME}:${GIT_TOKEN}@github.com/${GIT_USER_NAME}/${GIT_REPO_NAME}.git HEAD:master
+                        """
+                    }
+                }
+            }
+        }
+
+        stage('Clean Local Docker Images') {
+            steps {
+                sh "docker rmi ${SERVICE_NAME}:${IMAGE_TAG} ${ECR_REPO}:${IMAGE_TAG} || true"
+            }
+        }
+    }
+
+    post {
+        success { echo "✅ ${SERVICE_NAME} pipeline completed successfully!" }
+        failure { echo "❌ ${SERVICE_NAME} pipeline failed!" }
+    }
+}

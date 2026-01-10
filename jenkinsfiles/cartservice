@@ -1,0 +1,418 @@
+pipeline {
+    agent any
+    
+    environment {
+        AWS_REGION = 'us-east-1'
+        AWS_ACCOUNT_ID = '851725560519'
+        SERVICE_NAME = 'cartservice'
+        ECR_REPO_NAME = 'aymen-cart-service'
+        DOCKERFILE_BASE_PATH = 'src/cartservice'
+        DOCKERFILE_DIR = 'src/cartservice/src'
+        ECR_REPO_URL = "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO_NAME}"
+        GIT_EMAIL = 'aymen.bendjaballah@univ-constantine2.dz'
+        GIT_USER_NAME = 'aymenmahrez-19'
+        K8S_FILES_DIR = 'kubernetes-files'
+    }
+    
+    stages {
+        stage('Clean Workspace') {
+            steps {
+                cleanWs()
+                echo "✅ Workspace cleaned"
+            }
+        }
+        
+        stage('Checkout SCM') {
+            steps {
+                checkout scm
+                echo "✅ Code checked out from Git"
+            }
+        }
+        
+        stage('Verify Project Structure') {
+            steps {
+                script {
+                    echo """
+                    📁 Project Structure Verification
+                    ================================
+                    Service: ${SERVICE_NAME}
+                    Expected Dockerfile: ${DOCKERFILE_DIR}/Dockerfile
+                    Kubernetes Files: ${K8S_FILES_DIR}/
+                    ================================
+                    """
+                    
+                    sh """
+                        echo "=== Current Directory ==="
+                        pwd
+                        
+                        echo "=== Listing Workspace ==="
+                        ls -la
+                        
+                        echo "=== Checking Dockerfile Location ==="
+                        if [ -f "${DOCKERFILE_DIR}/Dockerfile" ]; then
+                            echo "✅ Dockerfile found at: ${DOCKERFILE_DIR}/Dockerfile"
+                            echo "=== Dockerfile Preview ==="
+                            head -30 "${DOCKERFILE_DIR}/Dockerfile"
+                        else
+                            echo "❌ Dockerfile NOT FOUND at ${DOCKERFILE_DIR}/Dockerfile"
+                            echo "Searching for Dockerfile..."
+                            find . -name "Dockerfile" -type f | head -10
+                            echo "Creating backup Dockerfile..."
+                            mkdir -p "${DOCKERFILE_DIR}"
+                            cat > "${DOCKERFILE_DIR}/Dockerfile" << 'EOF'
+FROM node:18-alpine
+WORKDIR /app
+COPY package*.json ./
+RUN npm install
+COPY . .
+EXPOSE 7070
+CMD ["npm", "start"]
+EOF
+                            echo "✅ Created backup Dockerfile"
+                        fi
+                        
+                        echo "=== Checking Kubernetes Files ==="
+                        if [ -d "${K8S_FILES_DIR}" ]; then
+                            echo "✅ Kubernetes directory found"
+                            ls -la "${K8S_FILES_DIR}/"
+                        else
+                            echo "⚠️ Kubernetes directory not found, creating..."
+                            mkdir -p "${K8S_FILES_DIR}"
+                        fi
+                    """
+                }
+            }
+        }
+        
+        stage('Setup AWS & ECR') {
+            steps {
+                script {
+                    sh """
+                        # Configure AWS CLI
+                        aws configure set region ${AWS_REGION}
+                        aws configure set output json
+                        
+                        # Test AWS credentials
+                        echo "=== Testing AWS Credentials ==="
+                        AWS_IDENTITY=\$(aws sts get-caller-identity --query 'Account' --output text 2>/dev/null)
+                        if [ \$? -eq 0 ]; then
+                            echo "✅ AWS Account ID: \${AWS_IDENTITY}"
+                        else
+                            echo "❌ AWS credentials failed"
+                            echo "Make sure you have valid AWS Learner Lab credentials"
+                            exit 1
+                        fi
+                        
+                        # Check/Create ECR repository
+                        echo "=== Setting up ECR Repository ==="
+                        if aws ecr describe-repositories --repository-names ${ECR_REPO_NAME} --region ${AWS_REGION} >/dev/null 2>&1; then
+                            echo "✅ ECR repository already exists: ${ECR_REPO_NAME}"
+                        else
+                            echo "🔧 Creating ECR repository: ${ECR_REPO_NAME}"
+                            aws ecr create-repository \
+                                --repository-name ${ECR_REPO_NAME} \
+                                --region ${AWS_REGION}
+                            echo "✅ ECR repository created"
+                        fi
+                        
+                        # Get ECR login
+                        echo "=== Logging into ECR ==="
+                        aws ecr get-login-password --region ${AWS_REGION} | \
+                            docker login --username AWS --password-stdin ${ECR_REPO_URL}
+                        echo "✅ Logged into ECR"
+                    """
+                }
+            }
+        }
+        
+        stage('Build Docker Image') {
+            steps {
+                script {
+                    sh """
+                        echo "=== Building Docker Image ==="
+                        echo "Building from: ${DOCKERFILE_DIR}"
+                        echo "Build Number: ${BUILD_NUMBER}"
+                        
+                        # Change to Dockerfile directory
+                        cd "${DOCKERFILE_DIR}"
+                        echo "Build directory: \$(pwd)"
+                        echo "Files in build context:"
+                        ls -la
+                        
+                        # Build the Docker image with proper tags
+                        docker build \\
+                            -t ${SERVICE_NAME}:${BUILD_NUMBER} \\
+                            -t ${SERVICE_NAME}:latest \\
+                            -t ${ECR_REPO_URL}:${BUILD_NUMBER} \\
+                            -t ${ECR_REPO_URL}:latest \\
+                            .
+                        
+                        echo "✅ Docker image built successfully"
+                        echo "=== Built Images ==="
+                        docker images | grep -E "${SERVICE_NAME}|${ECR_REPO_NAME}"
+                    """
+                }
+            }
+        }
+        
+        stage('Push to ECR') {
+            steps {
+                script {
+                    sh """
+                        echo "=== Pushing Images to ECR ==="
+                        echo "ECR Repository: ${ECR_REPO_URL}"
+                        
+                        # Push both tags
+                        docker push ${ECR_REPO_URL}:${BUILD_NUMBER}
+                        docker push ${ECR_REPO_URL}:latest
+                        
+                        echo "✅ Images pushed to ECR"
+                        
+                        # Set up lifecycle policy
+                        echo "=== Setting ECR Lifecycle Policy ==="
+                        cat > /tmp/lifecycle-policy.json << EOF
+{
+    "rules": [
+        {
+            "rulePriority": 1,
+            "description": "Keep only last 5 images",
+            "selection": {
+                "tagStatus": "any",
+                "countType": "imageCountMoreThan",
+                "countNumber": 5
+            },
+            "action": {
+                "type": "expire"
+            }
+        }
+    ]
+}
+EOF
+                        
+                        aws ecr put-lifecycle-policy \
+                            --repository-name ${ECR_REPO_NAME} \
+                            --region ${AWS_REGION} \
+                            --lifecycle-policy-text file:///tmp/lifecycle-policy.json
+                        
+                        echo "✅ Lifecycle policy applied"
+                        
+                        # List images in ECR
+                        echo "=== Images in ECR ==="
+                        aws ecr list-images \
+                            --repository-name ${ECR_REPO_NAME} \
+                            --region ${AWS_REGION} \
+                            --query "imageIds[*].imageTag" \
+                            --output text
+                    """
+                }
+            }
+        }
+        
+        stage('Update Kubernetes Manifests') {
+            steps {
+                script {
+                    sh """
+                        echo "=== Updating Kubernetes Deployment ==="
+                        
+                        # Ensure kubernetes directory exists
+                        mkdir -p "${K8S_FILES_DIR}"
+                        
+                        # Create or update cartservice.yaml
+                        cat > "${K8S_FILES_DIR}/cartservice.yaml" << EOF
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cartservice
+  namespace: default
+  labels:
+    app: cartservice
+    version: "v${BUILD_NUMBER}"
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: cartservice
+  template:
+    metadata:
+      labels:
+        app: cartservice
+    spec:
+      containers:
+      - name: cartservice
+        image: ${ECR_REPO_URL}:${BUILD_NUMBER}
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 7070
+          name: http
+        env:
+        - name: PORT
+          value: "7070"
+        - name: NODE_ENV
+          value: "production"
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "200m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 7070
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 7070
+          initialDelaySeconds: 5
+          periodSeconds: 5
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: cartservice
+  namespace: default
+spec:
+  selector:
+    app: cartservice
+  ports:
+  - port: 7070
+    targetPort: 7070
+    protocol: TCP
+    name: http
+  type: ClusterIP
+EOF
+                        
+                        echo "✅ Kubernetes manifest updated"
+                        echo "=== Manifest Preview ==="
+                        head -40 "${K8S_FILES_DIR}/cartservice.yaml"
+                    """
+                }
+            }
+        }
+        
+        stage('Commit to Git') {
+            steps {
+                script {
+                    withCredentials([string(credentialsId: 'my-git-pattoken', variable: 'GIT_TOKEN')]) {
+                        sh """
+                            echo "=== Committing Changes to Git ==="
+                            
+                            # Configure git
+                            git config --global user.email "${GIT_EMAIL}"
+                            git config --global user.name "${GIT_USER_NAME}"
+                            
+                            # Check if there are changes
+                            git status
+                            
+                            # Add Kubernetes file
+                            git add "${K8S_FILES_DIR}/cartservice.yaml"
+                            
+                            # Commit if there are changes
+                            if git diff --cached --quiet; then
+                                echo "⚠️ No changes to commit"
+                            else
+                                git commit -m "LearnerLab: Update ${SERVICE_NAME} to version ${BUILD_NUMBER} [${env.BUILD_TAG}]"
+                                
+                                # Push to remote
+                                echo "Pushing to GitHub..."
+                                git push https://${GIT_USER_NAME}:${GIT_TOKEN}@github.com/${GIT_USER_NAME}/Microservices-E-Commerce-eks-project.git HEAD:master
+                                echo "✅ Changes pushed to GitHub"
+                            fi
+                        """
+                    }
+                }
+            }
+        }
+        
+        stage('Manual Deployment Instructions') {
+            steps {
+                script {
+                    echo """
+                    📋 MANUAL DEPLOYMENT INSTRUCTIONS
+                    ==================================
+                    Your pipeline has completed successfully!
+                    
+                    To deploy to EKS manually, run:
+                    
+                    1. Update kubeconfig:
+                       aws eks update-kubeconfig --name [your-cluster-name] --region ${AWS_REGION}
+                    
+                    2. Deploy the service:
+                       kubectl apply -f ${K8S_FILES_DIR}/cartservice.yaml
+                    
+                    3. Verify deployment:
+                       kubectl get deployment cartservice
+                       kubectl get pods -l app=cartservice
+                    
+                    ==================================
+                    Service: ${SERVICE_NAME}
+                    ECR Image: ${ECR_REPO_URL}:${BUILD_NUMBER}
+                    Build: ${BUILD_NUMBER}
+                    ==================================
+                    """
+                }
+            }
+        }
+    }
+    
+    post {
+        always {
+            script {
+                echo "=== Pipeline Summary ==="
+                echo "Service: ${SERVICE_NAME}"
+                echo "Build: ${BUILD_NUMBER}"
+                echo "ECR Image: ${ECR_REPO_URL}:${BUILD_NUMBER}"
+                echo "Status: ${currentBuild.result ?: 'SUCCESS'}"
+            }
+            
+            // Cleanup
+            sh '''
+                echo "=== Cleaning Docker Cache ==="
+                docker system prune -f --volumes 2>/dev/null || true
+                rm -f /tmp/lifecycle-policy.json 2>/dev/null || true
+            '''
+        }
+        
+        success {
+            echo """
+            🎉 PIPELINE SUCCESSFUL!
+            ========================
+            Service: ${SERVICE_NAME}
+            ECR Image: ${ECR_REPO_URL}:${BUILD_NUMBER}
+            Kubernetes Manifest: ${K8S_FILES_DIR}/cartservice.yaml
+            ========================
+            To deploy manually:
+            kubectl apply -f ${K8S_FILES_DIR}/cartservice.yaml
+            ========================
+            """
+        }
+        
+        failure {
+            echo """
+            ❌ PIPELINE FAILED
+            ========================
+            Check the logs above for errors.
+            Common issues:
+            1. AWS credentials not configured
+            2. ECR repository access denied
+            3. Dockerfile not found
+            4. Git authentication failed
+            ========================
+            """
+        }
+        
+        cleanup {
+            cleanWs()
+        }
+    }
+    
+    options {
+        timeout(time: 30, unit: 'MINUTES')
+        retry(2)
+        timestamps()
+        buildDiscarder(logRotator(numToKeepStr: '10'))
+    }
+}

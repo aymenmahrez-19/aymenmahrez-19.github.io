@@ -1,0 +1,49 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: load-generator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: load-generator
+  template:
+    metadata:
+      labels:
+        app: load-generator
+    spec:
+      terminationGracePeriodSeconds: 5
+      containers:
+      - name: load-generator
+        image: 851725560519.dkr.ecr.us-east-1.amazonaws.com/aymen-load-generator:14
+        ports:
+        - containerPort: 8089
+          name: http
+        env:
+        - name: FRONTEND_ADDR
+          value: "frontend:8080"
+        - name: USERS
+          value: "10"
+        - name: RATE
+          value: "10"
+        resources:
+          requests:
+            cpu: 200m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: load-generator
+spec:
+  type: ClusterIP
+  selector:
+    app: load-generator
+  ports:
+  - name: http
+    port: 8089
+    targetPort: 8089
+    protocol: TCP

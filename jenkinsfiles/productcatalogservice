@@ -1,0 +1,57 @@
+pipeline {
+    agent any
+
+    environment {
+        AWS_REGION = "us-east-1"
+        ECR_REPO   = "851725560519.dkr.ecr.us-east-1.amazonaws.com/aymen-product-catalog-service"
+        IMAGE_NAME = "product-catalog-service"
+    }
+
+    stages {
+
+        stage('Checkout') {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage('Docker Build') {
+            steps {
+                dir('src/productcatalogservice') {
+                    sh 'docker build -t ${IMAGE_NAME}:latest .'
+                }
+            }
+        }
+
+        stage('Push to ECR') {
+            steps {
+                sh '''
+                  aws ecr get-login-password --region $AWS_REGION | \
+                  docker login --username AWS --password-stdin $ECR_REPO
+
+                  docker tag ${IMAGE_NAME}:latest $ECR_REPO:latest
+                  docker push $ECR_REPO:latest
+                '''
+            }
+        }
+
+        stage('Update YAML & Git Push') {
+            steps {
+                dir('kubernetes-files') {
+                    withCredentials([string(credentialsId: 'my-git-pattoken', variable: 'GIT_TOKEN')]) {
+                        sh '''
+                          git config user.email "aymen.bendjaballah@univ-constantine2.dz"
+                          git config user.name "aymenmahrez-19"
+
+                          sed -i "s#image:.*#image: ${ECR_REPO}:latest#g" productcatalogservice.yaml
+
+                          git add productcatalogservice.yaml
+                          git commit -m "Update productcatalogservice image" || echo "No changes"
+                          git push https://${GIT_TOKEN}@github.com/aymenmahrez-19/Microservices-E-Commerce-eks-project.git HEAD:master
+                        '''
+                    }
+                }
+            }
+        }
+    }
+}

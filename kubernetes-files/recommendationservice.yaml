@@ -1,0 +1,47 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: recommendation-service
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: recommendation-service
+  template:
+    metadata:
+      labels:
+        app: recommendation-service
+    spec:
+      terminationGracePeriodSeconds: 5
+      containers:
+      - name: recommendation-service
+        image: 851725560519.dkr.ecr.us-east-1.amazonaws.com/aymen-recommendation-service:latest
+        ports:
+        - containerPort: 8080
+          name: http
+        env:
+        - name: PORT
+          value: "8080"
+        - name: PRODUCT_CATALOG_SERVICE_ADDR
+          value: "product-catalog-service:3550"
+        resources:
+          requests:
+            cpu: 200m
+            memory: 256Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: recommendation-service
+spec:
+  type: ClusterIP
+  selector:
+    app: recommendation-service
+  ports:
+  - name: http
+    port: 8080
+    targetPort: 8080
+    protocol: TCP

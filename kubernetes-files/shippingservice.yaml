@@ -1,0 +1,47 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: shipping-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: shipping-service
+  template:
+    metadata:
+      labels:
+        app: shipping-service
+    spec:
+      terminationGracePeriodSeconds: 5
+      containers:
+      - name: shipping-service
+        image: 851725560519.dkr.ecr.us-east-1.amazonaws.com/aymen-shipping-service:latest
+        ports:
+        - containerPort: 50051
+          name: grpc
+        env:
+        - name: PORT
+          value: "50051"
+        - name: CURRENCY_SERVICE_ADDR
+          value: "currencyservice:7000"
+        resources:
+          requests:
+            cpu: 100m
+            memory: 64Mi
+          limits:
+            cpu: 200m
+            memory: 128Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: shipping-service
+spec:
+  type: ClusterIP
+  selector:
+    app: shipping-service
+  ports:
+  - name: grpc
+    port: 50051
+    targetPort: 50051
+    protocol: TCP

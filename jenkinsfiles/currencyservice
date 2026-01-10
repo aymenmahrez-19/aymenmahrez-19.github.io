@@ -1,0 +1,103 @@
+pipeline {
+    agent any
+    environment {
+        GIT_REPO_NAME = "Microservices-E-Commerce-eks-project"
+        GIT_EMAIL = "aymen.bendjaballah@univ-constantine2.dz"
+        GIT_USER_NAME = "aymenmahrez-19"
+        IMAGE_NAME = "currencyservice"
+        // ✅ تصحيح: استخدام حسابك الصحيح 851725560519
+        REPO_URL = "851725560519.dkr.ecr.us-east-1.amazonaws.com/aymen-currency-service"
+        YAML_FILE = "currencyservice.yaml"
+        AWS_REGION = "us-east-1"
+        AWS_ACCOUNT_ID = "851725560519"  // ✅ حسابك الصحيح
+    }
+    
+    options { 
+        timeout(time:30,unit:'MINUTES')
+        disableConcurrentBuilds()
+        buildDiscarder(logRotator(numToKeepStr:'10'))
+    }
+    
+    stages {
+        stage('Clean Workspace') { 
+            steps { cleanWs() } 
+        }
+        
+        stage('Checkout') { 
+            steps { 
+                checkout([
+                    $class: 'GitSCM',
+                    branches: [[name: 'master']],
+                    extensions: [
+                        [$class: 'CleanBeforeCheckout'],
+                        [$class: 'CloneOption', depth: 1, shallow: true]
+                    ],
+                    userRemoteConfigs: [[
+                        url: 'https://github.com/aymenmahrez-19/Microservices-E-Commerce-eks-project.git'
+                    ]]
+                ])
+            } 
+        }
+        
+        stage('Docker Build') { 
+            steps { 
+                dir('src/currencyservice') {
+                    sh '''
+                        docker system prune -f
+                        docker build -t currencyservice:${BUILD_NUMBER} -t currencyservice:latest .
+                    '''
+                }
+            } 
+        }
+        
+        stage('Push to ECR') { 
+            steps { 
+                script {
+                    // ✅ أولاً: تسجيل الدخول إلى حسابك الصحيح
+                    sh """
+                        aws ecr get-login-password --region ${AWS_REGION} | \
+                        docker login --username AWS --password-stdin ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com
+                    """
+                    
+                    // ✅ ثانياً: استخدام اسم المستودع الصحيح aymen-currency-service
+                    sh """
+                        docker tag currencyservice:${BUILD_NUMBER} ${REPO_URL}:${BUILD_NUMBER}
+                        docker tag currencyservice:latest ${REPO_URL}:latest
+                        
+                        docker push ${REPO_URL}:${BUILD_NUMBER}
+                        docker push ${REPO_URL}:latest
+                        
+                        echo "✅ Pushed to ECR: ${REPO_URL}:${BUILD_NUMBER}"
+                    """
+                }
+            } 
+        }
+        
+        stage('Update YAML & Git Push') { 
+            steps {
+                dir('kubernetes-files') { 
+                    withCredentials([
+                        string(credentialsId: 'my-git-pattoken', variable: 'GIT_TOKEN')
+                    ]) {
+                        sh """
+                            git config user.email "${GIT_EMAIL}"
+                            git config user.name "${GIT_USER_NAME}"
+                            
+                            sed -i "s#image:.*#image: ${REPO_URL}:${BUILD_NUMBER}#g" ${YAML_FILE}
+                            
+                            git add ${YAML_FILE}
+                            git commit -m "Update ${IMAGE_NAME} image to version ${BUILD_NUMBER}" || echo "No changes"
+                            
+                            git push https://${GIT_USER_NAME}:${GIT_TOKEN}@github.com/${GIT_USER_NAME}/${GIT_REPO_NAME}.git HEAD:master
+                        """
+                    } 
+                }
+            } 
+        }
+    }
+    
+    post { 
+        success { echo "✅ ${IMAGE_NAME} pushed successfully" }
+        failure { echo "❌ ${IMAGE_NAME} pipeline failed" }
+    }
+}

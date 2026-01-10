@@ -1,0 +1,71 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  namespace: dev
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: frontend
+  template:
+    metadata:
+      labels:
+        app: frontend
+    spec:
+      terminationGracePeriodSeconds: 5
+      containers:
+      - name: frontend
+        image: 851725560519.dkr.ecr.us-east-1.amazonaws.com/aymen-frontend:latest
+        ports:
+        - containerPort: 8080
+          name: http
+        env:
+        - name: PORT
+          value: "8080"
+        - name: PRODUCT_CATALOG_SERVICE_ADDR
+          value: "product-catalog-service:3550"
+        - name: CART_SERVICE_ADDR
+          value: "cartservice:7070"
+        - name: RECOMMENDATION_SERVICE_ADDR
+          value: "recommendation-service:8080"
+        - name: SHIPPING_SERVICE_ADDR
+          value: "shipping-service:50051"
+        - name: CURRENCY_SERVICE_ADDR
+          value: "currencyservice:7000"
+        - name: CHECKOUT_SERVICE_ADDR
+          value: "checkoutservice:5050"
+        - name: AD_SERVICE_ADDR
+          value: "adservice:9555"
+        - name: PAYMENT_SERVICE_ADDR
+          value: "payment-service:50051"
+        - name: EMAIL_SERVICE_ADDR
+          value: "emailservice:8080"
+        - name: DISABLE_TRACING
+          value: "1"
+        - name: DISABLE_PROFILER
+          value: "1"
+        - name: DISABLE_STATS
+          value: "1"
+        resources:
+          requests:
+            cpu: 100m
+            memory: 64Mi
+          limits:
+            cpu: 200m
+            memory: 128Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend
+  namespace: dev
+spec:
+  type: LoadBalancer
+  selector:
+    app: frontend
+  ports:
+  - name: http
+    port: 80 # BEGIN: ed8c6549bwf9
+    targetPort: 8080
+    protocol: TCP

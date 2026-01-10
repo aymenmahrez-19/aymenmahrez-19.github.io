@@ -1,0 +1,147 @@
+pipeline {
+    agent any
+
+    environment {
+        TERRAFORM_DIR = 'ecr-terraform'
+        AWS_REGION    = 'us-east-1'
+        GIT_EMAIL     = 'aymen.bendjaballah@univ-constantine2.dz'
+        GIT_USER_NAME = 'aymenmahrez-19'
+        GIT_REPO_URL  = 'https://github.com/aymenmahrez-19/Microservices-E-Commerce-eks-project.git'
+    }
+
+    parameters {
+        choice(
+            name: 'ACTION',
+            choices: ['plan', 'apply', 'destroy'],
+            description: 'Terraform action'
+        )
+
+        booleanParam(
+            name: 'AUTO_APPROVE',
+            defaultValue: false,
+            description: 'Auto approve apply/destroy'
+        )
+    }
+
+    options {
+        timeout(time: 30, unit: 'MINUTES')
+        disableConcurrentBuilds()
+        buildDiscarder(logRotator(numToKeepStr: '10'))
+    }
+
+    stages {
+
+        stage('🔍 AWS Identity') {
+            steps {
+                sh '''
+                    aws sts get-caller-identity
+                '''
+            }
+        }
+
+        stage('📥 Checkout SCM') {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage('⚙️ Terraform Init') {
+            steps {
+                dir(TERRAFORM_DIR) {
+                    sh 'terraform init -input=false -reconfigure'
+                }
+            }
+        }
+
+        stage('📊 Terraform Plan') {
+            when {
+                expression { params.ACTION == 'plan' || params.ACTION == 'apply' }
+            }
+            steps {
+                dir(TERRAFORM_DIR) {
+                    sh '''
+                        terraform plan \
+                          -var="aws_region=us-east-1" \
+                          -out=tfplan
+                    '''
+                }
+            }
+        }
+
+        stage('🚀 Terraform Apply') {
+            when {
+                expression { params.ACTION == 'apply' }
+            }
+            steps {
+                dir(TERRAFORM_DIR) {
+                    sh """
+                        terraform apply ${params.AUTO_APPROVE ? '-auto-approve tfplan' : 'tfplan'}
+                    """
+                }
+            }
+        }
+
+        stage('📝 Generate ECR Report') {
+            when {
+                expression { params.ACTION == 'apply' }
+            }
+            steps {
+                dir(TERRAFORM_DIR) {
+                    sh '''
+                        echo "# ECR Repositories" > ECR_REPOSITORIES.md
+                        echo "" >> ECR_REPOSITORIES.md
+                        echo "## Repository URLs" >> ECR_REPOSITORIES.md
+                        terraform output -json ecr_repository_urls \
+                          | jq -r 'to_entries[] | "- **\\(.key)**: \\(.value)"' \
+                          >> ECR_REPOSITORIES.md
+                    '''
+                }
+            }
+        }
+
+        stage('📤 Push Report to GitHub') {
+            when {
+                expression { params.ACTION == 'apply' }
+            }
+            steps {
+                withCredentials([usernamePassword(
+                    credentialsId: 'github-creds',
+                    usernameVariable: 'GIT_USER',
+                    passwordVariable: 'GIT_TOKEN'
+                )]) {
+                    sh '''
+                        git config user.email "${GIT_EMAIL}"
+                        git config user.name "${GIT_USER_NAME}"
+
+                        git add ecr-terraform/ECR_REPOSITORIES.md
+                        git commit -m "docs: add ECR repositories report" || echo "No changes to commit"
+
+                        git push https://${GIT_USER}:${GIT_TOKEN}@github.com/aymenmahrez-19/Microservices-E-Commerce-eks-project.git HEAD:master
+                    '''
+                }
+            }
+        }
+
+        stage('🗑️ Terraform Destroy') {
+            when {
+                expression { params.ACTION == 'destroy' }
+            }
+            steps {
+                dir(TERRAFORM_DIR) {
+                    sh """
+                        terraform destroy ${params.AUTO_APPROVE ? '-auto-approve' : ''}
+                    """
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            echo '✅ Pipeline completed successfully'
+        }
+        failure {
+            echo '❌ Pipeline failed'
+        }
+    }
+}

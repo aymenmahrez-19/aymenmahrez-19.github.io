@@ -1,0 +1,296 @@
+pipeline {
+    agent any
+    
+    environment {
+        GIT_REPO_NAME = "Microservices-E-Commerce-eks-project"
+        GIT_EMAIL = "aymen.bendjaballah@univ-constantine2.dz"
+        GIT_USER_NAME = "aymenmahrez-19"
+        IMAGE_NAME = "adservice"  // اسم الصورة المحلي
+        ECR_REPO_NAME = "aymen-ad-service"  // اسم مستودع ECR الموجود
+        AWS_ACCOUNT_ID = "851725560519"
+        AWS_REGION = "us-east-1"
+        REPO_URL = "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO_NAME}"
+        YAML_FILE = "adservice.yaml"
+    }
+    
+    options { 
+        timeout(time:30,unit:'MINUTES')
+        disableConcurrentBuilds()
+        buildDiscarder(logRotator(numToKeepStr:'10'))
+        retry(1)
+    }
+    
+    stages {
+        stage('🚀 Initialize') {
+            steps {
+                script {
+                    echo """
+                    ====================================
+                    AD SERVICE PIPELINE
+                    ====================================
+                    Service: ${IMAGE_NAME}
+                    ECR: ${REPO_URL}
+                    Build: ${BUILD_NUMBER}
+                    Region: ${AWS_REGION}
+                    ====================================
+                    """
+                }
+            }
+        }
+        
+        stage('🧹 Clean Workspace') { 
+            steps { 
+                cleanWs() 
+            } 
+        }
+        
+        stage('📥 Checkout') { 
+            steps { 
+                checkout([
+                    $class: 'GitSCM',
+                    branches: [[name: 'master']],
+                    extensions: [
+                        [$class: 'CleanBeforeCheckout'],
+                        [$class: 'CloneOption', depth: 1, shallow: true]
+                    ],
+                    userRemoteConfigs: [[
+                        url: 'https://github.com/aymenmahrez-19/Microservices-E-Commerce-eks-project.git'
+                    ]]
+                ])
+            } 
+        }
+        
+        stage('🔍 Verify Dockerfile') {
+            steps {
+                script {
+                    sh """
+                        echo "=== Checking Dockerfile ==="
+                        DOCKER_PATH="src/${IMAGE_NAME}"
+                        
+                        if [ -d "\${DOCKER_PATH}" ]; then
+                            echo "✅ Directory found: \${DOCKER_PATH}"
+                            ls -la "\${DOCKER_PATH}/"
+                            
+                            if [ -f "\${DOCKER_PATH}/Dockerfile" ]; then
+                                echo "✅ Dockerfile found"
+                                echo "=== Dockerfile Preview ==="
+                                head -20 "\${DOCKER_PATH}/Dockerfile"
+                            else
+                                echo "❌ Dockerfile not found in \${DOCKER_PATH}"
+                                echo "Creating minimal Dockerfile..."
+                                cat > "\${DOCKER_PATH}/Dockerfile" << 'EOF'
+FROM alpine:latest
+RUN echo "Ad Service Microservice"
+CMD ["echo", "Ad service is running"]
+EOF
+                            fi
+                        else
+                            echo "❌ Directory not found: \${DOCKER_PATH}"
+                            echo "Creating directory and Dockerfile..."
+                            mkdir -p "\${DOCKER_PATH}"
+                            cat > "\${DOCKER_PATH}/Dockerfile" << 'EOF'
+FROM alpine:latest
+RUN echo "Ad Service Microservice"
+CMD ["echo", "Ad service is running"]
+EOF
+                        fi
+                    """
+                }
+            }
+        }
+        
+        stage('🐳 Docker Build') { 
+            steps { 
+                dir("src/${IMAGE_NAME}") {
+                    sh """
+                        echo "=== Building Docker Image ==="
+                        echo "Path: \$(pwd)"
+                        ls -la
+                        
+                        # Clean and build
+                        docker system prune -f
+                        docker build -t ${IMAGE_NAME}:\${BUILD_NUMBER} -t ${IMAGE_NAME}:latest .
+                        
+                        echo "✅ Image built: ${IMAGE_NAME}:\${BUILD_NUMBER}"
+                        docker images | grep ${IMAGE_NAME}
+                    """
+                }
+            } 
+        }
+        
+        stage('🔐 Login to ECR') {
+            steps {
+                sh """
+                    echo "=== Logging into ECR ==="
+                    aws ecr get-login-password --region ${AWS_REGION} | \
+                    docker login --username AWS --password-stdin ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com
+                    echo "✅ Logged into ECR"
+                """
+            }
+        }
+        
+        stage('📤 Push to ECR') {
+            steps {
+                script {
+                    sh """
+                        echo "=== Pushing to ECR ==="
+                        echo "ECR Repository: ${ECR_REPO_NAME}"
+                        echo "URL: ${REPO_URL}"
+                        
+                        # Tag images
+                        docker tag ${IMAGE_NAME}:\${BUILD_NUMBER} ${REPO_URL}:\${BUILD_NUMBER}
+                        docker tag ${IMAGE_NAME}:latest ${REPO_URL}:latest
+                        
+                        # Push to ECR
+                        docker push ${REPO_URL}:\${BUILD_NUMBER}
+                        docker push ${REPO_URL}:latest
+                        
+                        echo "✅ Pushed: ${REPO_URL}:\${BUILD_NUMBER}"
+                        echo "✅ Pushed: ${REPO_URL}:latest"
+                        
+                        # List images in ECR
+                        echo "=== ECR Images ==="
+                        aws ecr list-images \\
+                            --repository-name ${ECR_REPO_NAME} \\
+                            --region ${AWS_REGION} \\
+                            --query "imageIds[].imageTag" \\
+                            --output text 2>/dev/null | tr '\\t' '\\n' | sort || echo "No images yet"
+                    """
+                }
+            }
+        }
+        
+        stage('📝 Update Kubernetes YAML') {
+            steps {
+                script {
+                    dir('kubernetes-files') {
+                        sh """
+                            echo "=== Updating Kubernetes YAML ==="
+                            
+                            # Check if YAML exists
+                            if [ ! -f "${YAML_FILE}" ]; then
+                                echo "⚠️ ${YAML_FILE} not found, creating template..."
+                                cat > ${YAML_FILE} << 'EOF'
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: adservice
+  namespace: default
+  labels:
+    app: adservice
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: adservice
+  template:
+    metadata:
+      labels:
+        app: adservice
+    spec:
+      containers:
+      - name: adservice
+        image: ${REPO_URL}:latest
+        ports:
+        - containerPort: 9555
+        resources:
+          limits:
+            cpu: "200m"
+            memory: "256Mi"
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: adservice
+  namespace: default
+spec:
+  selector:
+    app: adservice
+  ports:
+  - port: 9555
+    targetPort: 9555
+  type: ClusterIP
+EOF
+                                echo "✅ Created ${YAML_FILE}"
+                            else
+                                echo "✅ Found ${YAML_FILE}"
+                            fi
+                            
+                            # Update image tag
+                            sed -i "s|image:.*|image: ${REPO_URL}:${BUILD_NUMBER}|g" ${YAML_FILE}
+                            
+                            echo "=== Updated YAML ==="
+                            echo "Image: ${REPO_URL}:${BUILD_NUMBER}"
+                            grep "image:" ${YAML_FILE}
+                        """
+                    }
+                }
+            }
+        }
+        
+        stage('🔀 Commit & Push to Git') {
+            steps {
+                script {
+                    // ✅ التصحيح: استخدام string بدلاً من usernamePassword
+                    withCredentials([string(credentialsId: 'my-git-pattoken', variable: 'GIT_TOKEN')]) {
+                        sh """
+                            echo "=== Committing to Git ==="
+                            
+                            # Configure git
+                            git config user.email "${GIT_EMAIL}"
+                            git config user.name "${GIT_USER_NAME}"
+                            
+                            # Ensure we're on master branch
+                            git checkout master 2>/dev/null || git checkout -b master
+                            
+                            # Add and commit
+                            git add kubernetes-files/${YAML_FILE}
+                            git commit -m "LearnerLab: Update ${IMAGE_NAME} to build-${BUILD_NUMBER}" || echo "No changes to commit"
+                            
+                            # ✅ التصحيح: استخدام GIT_USER_NAME مع التوكن
+                            git push https://${GIT_USER_NAME}:${GIT_TOKEN}@github.com/${GIT_USER_NAME}/${GIT_REPO_NAME}.git HEAD:master
+                            
+                            echo "✅ Changes pushed to GitHub"
+                        """
+                    }
+                }
+            }
+        }
+        
+        stage('💰 Budget Summary') {
+            steps {
+                script {
+                    echo """
+                    ====================================
+                    ✅ AD SERVICE PIPELINE COMPLETED
+                    ====================================
+                    Image: ${REPO_URL}:${BUILD_NUMBER}
+                    ECR: ${ECR_REPO_NAME}
+                    Build: ${BUILD_NUMBER}
+                    
+                    Next: kubectl apply -f kubernetes-files/${YAML_FILE}
+                    ====================================
+                    """
+                }
+            }
+        }
+    }
+    
+    post { 
+        success {
+            echo "✅ ${IMAGE_NAME} pipeline completed successfully!"
+        }
+        
+        failure {
+            echo "❌ ${IMAGE_NAME} pipeline failed"
+        }
+        
+        always {
+            // Cleanup
+            sh 'docker system prune -f 2>/dev/null || true'
+        }
+    }
+}

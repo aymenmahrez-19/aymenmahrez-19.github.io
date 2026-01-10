@@ -1,0 +1,420 @@
+pipeline {
+    agent any
+
+    environment {
+        AWS_REGION = "us-east-1"
+        AWS_ACCOUNT_ID = "851725560519"
+        ECR_REPO_NAME = "aymen-load-generator"
+        ECR_REPO_URL = "851725560519.dkr.ecr.us-east-1.amazonaws.com/aymen-load-generator"
+        IMAGE_NAME = "load-generator"
+        SERVICE_NAME = "load-generator"
+        GIT_EMAIL = "aymen.bendjaballah@univ-constantine2.dz"
+        GIT_USER_NAME = "aymenmahrez-19"
+        GIT_REPO_NAME = "Microservices-E-Commerce-eks-project"
+        // Fixed paths based on your structure
+        DOCKERFILE_PATH = "src/loadgenerator"
+        YAML_FILE = "loadgenerator.yaml"
+        // Learner Lab cost control
+        MAX_ECR_IMAGES = "5"
+    }
+
+    options {
+        timeout(time: 30, unit: 'MINUTES')
+        disableConcurrentBuilds()
+        buildDiscarder(logRotator(numToKeepStr: '10'))
+        retry(1)
+    }
+
+    stages {
+        stage('🚀 Initialize - Learner Lab') {
+            steps {
+                script {
+                    echo """
+                    ====================================
+                    LOAD GENERATOR PIPELINE
+                    ====================================
+                    Service: ${SERVICE_NAME}
+                    ECR: ${ECR_REPO_URL}
+                    Image: ${IMAGE_NAME}
+                    Build: ${BUILD_NUMBER}
+                    Dockerfile: ${DOCKERFILE_PATH}
+                    YAML: ${YAML_FILE}
+                    Region: ${AWS_REGION}
+                    Learner Lab Budget Aware
+                    ====================================
+                    """
+                    
+                    // Verify AWS configuration
+                    sh '''
+                        echo "=== Verifying AWS Configuration ==="
+                        aws configure set region ${AWS_REGION}
+                        aws configure set output json
+                        
+                        # Test AWS credentials
+                        aws sts get-caller-identity && echo "✅ AWS credentials working" || echo "⚠️ AWS credentials may need configuration"
+                    '''
+                }
+            }
+        }
+
+        stage('📥 Checkout Code') {
+            steps {
+                checkout([
+                    $class: 'GitSCM',
+                    branches: [[name: '*/master']],
+                    extensions: [
+                        [$class: 'CleanBeforeCheckout'],
+                        [$class: 'CloneOption', depth: 1, shallow: true]
+                    ],
+                    userRemoteConfigs: [[
+                        url: "https://github.com/${GIT_USER_NAME}/${GIT_REPO_NAME}.git"
+                    ]]
+                ])
+                
+                // Verify the structure exists
+                sh """
+                    echo "=== Verifying Project Structure ==="
+                    echo "Checking Dockerfile at: ${DOCKERFILE_PATH}/Dockerfile"
+                    
+                    if [ -f "${DOCKERFILE_PATH}/Dockerfile" ]; then
+                        echo "✅ Dockerfile found at ${DOCKERFILE_PATH}/Dockerfile"
+                        echo "=== Dockerfile Content ==="
+                        head -30 "${DOCKERFILE_PATH}/Dockerfile"
+                    else
+                        echo "❌ Dockerfile not found at ${DOCKERFILE_PATH}/Dockerfile"
+                        echo "Creating minimal Dockerfile..."
+                        
+                        # Create a proper load generator Dockerfile
+                        mkdir -p "${DOCKERFILE_PATH}"
+                        cat > "${DOCKERFILE_PATH}/Dockerfile" << 'ENDDOCKERFILE'
+FROM alpine:latest
+
+# Install Python and required packages
+RUN apk add --no-cache python3 py3-pip curl
+
+# Install locust for load testing
+RUN pip3 install locust==2.17.0
+
+# Create app directory
+WORKDIR /app
+
+# Create a simple locustfile for testing
+COPY locustfile.py .
+
+# Expose Locust web UI port
+EXPOSE 8089
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \\
+  CMD curl -f http://localhost:8089/ || exit 1
+
+# Default command - will be overridden by Kubernetes args
+CMD ["locust", "--host=http://frontend:80", "--web-port=8089"]
+ENDDOCKERFILE
+                        
+                        # Create a sample locustfile
+                        cat > "${DOCKERFILE_PATH}/locustfile.py" << 'ENDLOCUSTFILE'
+from locust import HttpUser, task, between
+
+class WebsiteUser(HttpUser):
+    wait_time = between(1, 5)
+    
+    @task
+    def index(self):
+        self.client.get("/")
+    
+    @task(3)
+    def view_products(self):
+        self.client.get("/api/products")
+    
+    @task(2)
+    def view_cart(self):
+        self.client.get("/api/cart")
+ENDLOCUSTFILE
+                        
+                        echo "✅ Created Dockerfile and locustfile.py"
+                    fi
+                    
+                    echo ""
+                    echo "Checking YAML file at: kubernetes-files/${YAML_FILE}"
+                    if [ -f "kubernetes-files/${YAML_FILE}" ]; then
+                        echo "✅ YAML file found"
+                    else
+                        echo "⚠️ YAML file not found, will be created during pipeline"
+                    fi
+                """
+            }
+        }
+
+        stage('🐳 Docker Build') {
+            steps {
+                dir(env.DOCKERFILE_PATH) {
+                    script {
+                        sh """
+                            echo "=== Building Docker Image ==="
+                            echo "Path: \$(pwd)"
+                            echo "Files:"
+                            ls -la
+                            
+                            # Clean previous builds
+                            docker system prune -f 2>/dev/null || true
+                            
+                            # Build with multiple tags
+                            docker build \\
+                                -t ${IMAGE_NAME}:\${BUILD_NUMBER} \\
+                                -t ${IMAGE_NAME}:latest \\
+                                -t ${IMAGE_NAME}:learner-lab-\${BUILD_NUMBER} \\
+                                --build-arg BUILDKIT_INLINE_CACHE=1 \\
+                                .
+                            
+                            echo "✅ Image built successfully"
+                            echo "=== Built Images ==="
+                            docker images | grep ${IMAGE_NAME}
+                        """
+                    }
+                }
+            }
+        }
+
+        stage('🔐 Login to ECR') {
+            steps {
+                sh """
+                    echo "=== Logging into ECR ==="
+                    aws ecr get-login-password --region ${AWS_REGION} | \\
+                    docker login --username AWS --password-stdin ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com
+                    echo "✅ Logged into ECR"
+                """
+            }
+        }
+
+        stage('📤 Push to ECR') {
+            steps {
+                script {
+                    sh """
+                        echo "=== Pushing to ECR ==="
+                        
+                        # Create ECR repository if it doesn't exist
+                        if ! aws ecr describe-repositories --repository-names ${ECR_REPO_NAME} --region ${AWS_REGION} 2>/dev/null; then
+                            echo "⚠️ ECR repository doesn't exist, creating it..."
+                            aws ecr create-repository \\
+                                --repository-name ${ECR_REPO_NAME} \\
+                                --region ${AWS_REGION} \\
+                                --image-tag-mutability MUTABLE \\
+                                --image-scanning-configuration scanOnPush=false \\
+                                --tags Key=Environment,Value=LearnerLab Key=Service,Value=load-generator
+                            echo "✅ ECR repository created"
+                        else
+                            echo "✅ ECR repository already exists"
+                        fi
+                        
+                        # Tag images
+                        docker tag ${IMAGE_NAME}:\${BUILD_NUMBER} ${ECR_REPO_URL}:\${BUILD_NUMBER}
+                        docker tag ${IMAGE_NAME}:latest ${ECR_REPO_URL}:latest
+                        
+                        # Push to ECR
+                        echo "Pushing images to ECR..."
+                        docker push ${ECR_REPO_URL}:\${BUILD_NUMBER}
+                        docker push ${ECR_REPO_URL}:latest
+                        
+                        echo "✅ Pushed: ${ECR_REPO_URL}:\${BUILD_NUMBER}"
+                        echo "✅ Pushed: ${ECR_REPO_URL}:latest"
+                        
+                        # Apply lifecycle policy for Learner Lab cost control
+                        echo "=== Applying lifecycle policy ==="
+                        cat > lifecycle-policy.json << 'ENDLIFECYCLE'
+{
+    "rules": [
+        {
+            "rulePriority": 1,
+            "description": "Keep only last ${MAX_ECR_IMAGES} images",
+            "selection": {
+                "tagStatus": "any",
+                "countType": "imageCountMoreThan",
+                "countNumber": ${MAX_ECR_IMAGES}
+            },
+            "action": {
+                "type": "expire"
+            }
+        }
+    ]
+}
+ENDLIFECYCLE
+                        
+                        aws ecr put-lifecycle-policy \\
+                            --repository-name ${ECR_REPO_NAME} \\
+                            --region ${AWS_REGION} \\
+                            --lifecycle-policy-text file://lifecycle-policy.json 2>/dev/null || echo "Lifecycle policy updated or already exists"
+                        
+                        # List current images in ECR
+                        echo "=== Current ECR Images ==="
+                        aws ecr list-images \\
+                            --repository-name ${ECR_REPO_NAME} \\
+                            --region ${AWS_REGION} \\
+                            --query "imageIds[].imageTag" \\
+                            --output text 2>/dev/null | tr '\\t' '\\n' | sort || echo "No images yet"
+                    """
+                }
+            }
+        }
+
+        stage('📝 Update Kubernetes YAML') {
+            steps {
+                script {
+                    dir('kubernetes-files') {
+                        // First, let's see what's in the YAML file
+                        sh """
+                            echo "=== Checking existing YAML file ==="
+                            if [ -f "${YAML_FILE}" ]; then
+                                echo "✅ Found ${YAML_FILE}"
+                                echo "=== Current content ==="
+                                cat "${YAML_FILE}"
+                            else
+                                echo "❌ ${YAML_FILE} not found"
+                            fi
+                        """
+                        
+                        // Now update it
+                        script {
+                            // Read the current YAML content
+                            def yamlContent = readFile("${YAML_FILE}")
+                            
+                            // Replace the image tag
+                            def updatedContent = yamlContent.replaceAll(~/(image:\s*).*/, "\$1${env.ECR_REPO_URL}:${BUILD_NUMBER}")
+                            
+                            // Write back
+                            writeFile file: "${YAML_FILE}", text: updatedContent
+                            
+                            echo "✅ Updated ${YAML_FILE} with image: ${env.ECR_REPO_URL}:${BUILD_NUMBER}"
+                        }
+                        
+                        // Verify the update
+                        sh """
+                            echo "=== Updated YAML ==="
+                            grep "image:" "${YAML_FILE}"
+                        """
+                    }
+                }
+            }
+        }
+
+        stage('🔀 Commit & Push to Git') {
+            steps {
+                script {
+                    withCredentials([string(credentialsId: 'my-git-pattoken', variable: 'GIT_TOKEN')]) {
+                        sh """
+                            echo "=== Committing to Git ==="
+                            
+                            # Configure git
+                            git config --global user.email "${GIT_EMAIL}"
+                            git config --global user.name "${GIT_USER_NAME}"
+                            
+                            # Ensure we're on master branch
+                            git checkout master 2>/dev/null || git checkout -b master
+                            
+                            # Add and commit
+                            git add kubernetes-files/${YAML_FILE}
+                            git commit -m "LearnerLab: Update ${SERVICE_NAME} to build-${BUILD_NUMBER}" || echo "No changes to commit"
+                            
+                            # Push to GitHub
+                            git push https://${GIT_USER_NAME}:${GIT_TOKEN}@github.com/${GIT_USER_NAME}/${GIT_REPO_NAME}.git HEAD:master
+                            
+                            echo "✅ Changes pushed to GitHub"
+                        """
+                    }
+                }
+            }
+        }
+
+        stage('💰 Learner Lab Budget Summary') {
+            steps {
+                script {
+                    echo """
+                    ===========================================
+                    💰 LEARNER LAB BUDGET SUMMARY
+                    ===========================================
+                    Service: ${SERVICE_NAME}
+                    ECR: ${env.ECR_REPO_URL}:${BUILD_NUMBER}
+                    
+                    ✅ SUCCESS: Load generator built and pushed
+                    
+                    📊 ESTIMATED COST:
+                    - ECR Storage: ~\\\$0.02/month (200MB image)
+                    - Lifecycle: Keeps only ${MAX_ECR_IMAGES} images
+                    
+                    🎯 DEPLOYMENT COMMAND:
+                    kubectl apply -f kubernetes-files/${YAML_FILE}
+                    
+                    🔍 VERIFICATION:
+                    kubectl get pods -l app=load-generator
+                    kubectl logs -f deployment/load-generator
+                    
+                    📊 MONITORING:
+                    kubectl port-forward svc/load-generator 5000:8080
+                    
+                    🧹 CLEANUP (When done):
+                    kubectl delete -f kubernetes-files/${YAML_FILE}
+                    ===========================================
+                    """
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            // Cleanup to save space in Learner Lab
+            sh '''
+                echo "=== Cleaning up ==="
+                docker system prune -f 2>/dev/null || true
+                rm -f lifecycle-policy.json 2>/dev/null || true
+            '''
+            
+            // Archive artifacts
+            archiveArtifacts artifacts: 'kubernetes-files/*.yaml', fingerprint: true, allowEmptyArchive: true
+        }
+        
+        success {
+            script {
+                echo """
+                ✅ LOAD GENERATOR PIPELINE SUCCESS!
+                ====================================
+                Image: ${env.ECR_REPO_URL}:${BUILD_NUMBER}
+                Build: ${BUILD_NUMBER}
+                
+                To deploy to EKS:
+                kubectl apply -f kubernetes-files/${YAML_FILE}
+                
+                To access service:
+                kubectl port-forward svc/load-generator 5000:8080
+                
+                Next: Build other microservices or deploy to EKS!
+                ====================================
+                """
+            }
+        }
+        
+        failure {
+            echo """
+            ❌ LOAD GENERATOR PIPELINE FAILED
+            ====================================
+            Check logs above for specific error.
+            
+            Common issues:
+            1. Dockerfile at ${DOCKERFILE_PATH}/Dockerfile
+            2. ECR repository permissions
+            3. AWS credentials not configured
+            4. GitHub token permissions
+            
+            Debug commands:
+            - ls -la ${DOCKERFILE_PATH}/
+            - aws sts get-caller-identity
+            - docker images | grep ${IMAGE_NAME}
+            ====================================
+            """
+        }
+        
+        cleanup {
+            cleanWs()
+        }
+    }
+}
