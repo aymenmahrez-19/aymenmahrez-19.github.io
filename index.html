@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, shrink-to-fit=no">
+    <meta http-equiv="X-UA-Compatible" content="ie=edge">
+    <title>Online Boutique - Microservices Demo</title>
+    <link href="https://stackpath.bootstrapcdn.com/bootstrap/4.1.1/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-WskhaSGFgHYWDcbwN70/dfYBj47jz9qbsMId/iRN3ewGhXQFZCSftd1LZCfmhktB"
+        crossorigin="anonymous">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,wght@0,400;0,700;1,400;1,700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" type="text/css" href="static/styles/styles.css">
+    <link rel="stylesheet" type="text/css" href="static/styles/cart.css">
+    <link rel="stylesheet" type="text/css" href="static/styles/order.css">
+    <link rel='shortcut icon' type='image/x-icon' href='static/favicon.ico' />
+</head>
+
+<body>
+    <header>
+        <div class="navbar">
+            <div class="container d-flex justify-content-center">
+                <div class="h-free-shipping">Free shipping with $75 purchase!</div>
+            </div>
+        </div>
+        <div class="navbar sub-navbar">
+            <div class="container d-flex justify-content-between">
+                <a href="/" class="navbar-brand d-flex align-items-center">
+                    <img src="static/icons/Hipster_NavLogo.svg" alt="" class="top-left-logo" />
+                </a>
+                <div class="controls">
+                    <a href="#" class="cart-link">
+                        <img src="static/icons/Hipster_CartIcon.svg" alt="Cart icon" class="logo" title="Cart" />
+                    </a>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <main role="main" class="home">
+        <!-- The image at the top of the home page, displayed on smaller screens. -->
+        <div class="home-mobile-hero-banner d-lg-none"></div>
+
+        <div class="container-fluid">
+            <div class="row">
+                <!-- The image on the left of the home page, displayed on larger screens. -->
+                <div class="col-4 d-none d-lg-block home-desktop-left-image"></div>
+
+                <div class="col-12 col-lg-8">
+                    <div class="row hot-products-row px-xl-6">
+                        <div class="col-12">
+                            <h3>Hot Products</h3>
+                        </div>
+
+                        <div class="col-md-4 hot-product-card">
+                            <a href="#">
+                                <img alt="Bamboo Glass Jar" src="static/img/products/bamboo-glass-jar.jpg">
+                                <div class="hot-product-card-img-overlay"></div>
+                            </a>
+                            <div>
+                                <div class="hot-product-card-name">Bamboo Glass Jar</div>
+                                <div class="hot-product-card-price">$18.99</div>
+                            </div>
+                        </div>
+
+                        <div class="col-md-4 hot-product-card">
+                            <a href="#">
+                                <img alt="Candle Holder" src="static/img/products/candle-holder.jpg">
+                                <div class="hot-product-card-img-overlay"></div>
+                            </a>
+                            <div>
+                                <div class="hot-product-card-name">Candle Holder</div>
+                                <div class="hot-product-card-price">$24.00</div>
+                            </div>
+                        </div>
+
+                        <div class="col-md-4 hot-product-card">
+                            <a href="#">
+                                <img alt="Hairdryer" src="static/img/products/hairdryer.jpg">
+                                <div class="hot-product-card-img-overlay"></div>
+                            </a>
+                            <div>
+                                <div class="hot-product-card-name">Hairdryer</div>
+                                <div class="hot-product-card-price">$45.99</div>
+                            </div>
+                        </div>
+
+                        <div class="col-md-4 hot-product-card">
+                            <a href="#">
+                                <img alt="Loafers" src="static/img/products/loafers.jpg">
+                                <div class="hot-product-card-img-overlay"></div>
+                            </a>
+                            <div>
+                                <div class="hot-product-card-name">Loafers</div>
+                                <div class="hot-product-card-price">$89.00</div>
+                            </div>
+                        </div>
+
+                        <div class="col-md-4 hot-product-card">
+                            <a href="#">
+                                <img alt="Mug" src="static/img/products/mug.jpg">
+                                <div class="hot-product-card-img-overlay"></div>
+                            </a>
+                            <div>
+                                <div class="hot-product-card-name">Mug</div>
+                                <div class="hot-product-card-price">$12.50</div>
+                            </div>
+                        </div>
+
+                        <div class="col-md-4 hot-product-card">
+                            <a href="#">
+                                <img alt="Salt and Pepper Shakers" src="static/img/products/salt-and-pepper-shakers.jpg">
+                                <div class="hot-product-card-img-overlay"></div>
+                            </a>
+                            <div>
+                                <div class="hot-product-card-name">Salt and Pepper Shakers</div>
+                                <div class="hot-product-card-price">$14.99</div>
+                            </div>
+                        </div>
+
+                        <div class="col-md-4 hot-product-card">
+                            <a href="#">
+                                <img alt="Sunglasses" src="static/img/products/sunglasses.jpg">
+                                <div class="hot-product-card-img-overlay"></div>
+                            </a>
+                            <div>
+                                <div class="hot-product-card-name">Sunglasses</div>
+                                <div class="hot-product-card-price">$32.99</div>
+                            </div>
+                        </div>
+
+                        <div class="col-md-4 hot-product-card">
+                            <a href="#">
+                                <img alt="Tank Top" src="static/img/products/tank-top.jpg">
+                                <div class="hot-product-card-img-overlay"></div>
+                            </a>
+                            <div>
+                                <div class="hot-product-card-name">Tank Top</div>
+                                <div class="hot-product-card-price">$24.99</div>
+                            </div>
+                        </div>
+
+                        <div class="col-md-4 hot-product-card">
+                            <a href="#">
+                                <img alt="Watch" src="static/img/products/watch.jpg">
+                                <div class="hot-product-card-img-overlay"></div>
+                            </a>
+                            <div>
+                                <div class="hot-product-card-name">Watch</div>
+                                <div class="hot-product-card-price">$249.99</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Footer for larger screens. -->
+                    <div class="row d-none d-lg-block home-desktop-footer-row">
+                        <div class="col-12 p-0">
+                            <footer class="py-5">
+                                <div class="footer-top">
+                                    <div class="container footer-social">
+                                        <p class="footer-text">Microservices E-Commerce Demo Application</p>
+                                        <p class="footer-text">Built with Kubernetes, Terraform, and AWS EKS</p>
+                                        <p class="footer-text">© 2026 Aymen Mahrez (<a href="https://github.com/aymenmahrez-19/aymenmahrez-19.github.io">Source Code</a>)</p>
+                                    </div>
+                                </div>
+                            </footer>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Footer for smaller screens. -->
+        <div class="d-lg-none">
+            <footer class="py-5">
+                <div class="footer-top">
+                    <div class="container footer-social">
+                        <p class="footer-text">Microservices E-Commerce Demo Application</p>
+                        <p class="footer-text">Built with Kubernetes, Terraform, and AWS EKS</p>
+                        <p class="footer-text">© 2026 Aymen Mahrez (<a href="https://github.com/aymenmahrez-19/aymenmahrez-19.github.io">Source Code</a>)</p>
+                    </div>
+                </div>
+            </footer>
+        </div>
+    </main>
+
+    <script src="https://stackpath.bootstrapcdn.com/bootstrap/4.1.1/js/bootstrap.min.js"
+        integrity="sha384-smHYKdLADwkXOn1EmN1qk/HfnUcbVRZyYmZ4qpPea6sjB/pTJ0euyQp0Mk8ck+5T" crossorigin="anonymous">
+    </script>
+</body>
+
+</html>
